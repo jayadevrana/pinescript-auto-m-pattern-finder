@@ -1,0 +1,248 @@
+// @version=6
+indicator("AUTO M Pattern Finder", overlay = true, max_lines_count = 500)
+
+// -------- Inputs ----------
+pivotLen      = input.int(5, "Pivot Length (left+right)", minval=1)
+pivotTF       = input.timeframe("", "Pivot Timeframe (empty = chart TF)")
+lw            = input.int(2, "Line Width (Pattern)")
+lineColor     = input.color(color.rgb(13, 13, 12), "Pattern Line Color")
+tpColor       = input.color(color.blue, "TP Line Color")
+slColor       = input.color(color.red, "SL Line Color")
+tpWidth       = input.int(2, "TP Line Width", minval=1)
+slWidth       = input.int(2, "SL Line Width", minval=1)
+showTarget    = input.bool(true, "Show Target (TP)")
+showStop      = input.bool(true, "Show Stop (SL)")
+rrRatio       = input.float(3.0, "Risk/Reward Ratio", minval=0.5, step=0.5)
+tolPct        = input.float(3.0, "High Tolerance (%)", minval=0.1, step=0.1)
+restrictNSE   = input.bool(true, "Restrict to NSE session (09:15-15:30 IST)")
+
+// NSE session string (IST)
+nseSession = "0915-1530"
+
+// -------- Custom Pivot Functions ----------
+f_pivotLow(_src, _len) =>
+    float res = na
+    int win = _len * 2 + 1
+    float minv = ta.lowest(_src, win)
+    if not na(minv) and minv == _src[_len]
+        res := _src[_len]
+    res
+
+f_pivotHigh(_src, _len) =>
+    float res = na
+    int win = _len * 2 + 1
+    float maxv = ta.highest(_src, win)
+    if not na(maxv) and maxv == _src[_len]
+        res := _src[_len]
+    res
+
+// -------- Compute pivots on chosen TF ----------
+useHTF = pivotTF != ""
+ph_tf = useHTF ? request.security(syminfo.tickerid, pivotTF, f_pivotHigh(high, pivotLen), lookahead=barmerge.lookahead_off) : f_pivotHigh(high, pivotLen)
+pl_tf = useHTF ? request.security(syminfo.tickerid, pivotTF, f_pivotLow(low, pivotLen),  lookahead=barmerge.lookahead_off) : f_pivotLow(low, pivotLen)
+
+// -------- Pivots ----------
+pl = pl_tf
+ph = ph_tf
+
+// -------- Store last 4 pivots ----------
+var float v1 = na
+var float v2 = na
+var float v3 = na
+var float v4 = na
+var int   i1 = na
+var int   i2 = na
+var int   i3 = na
+var int   i4 = na
+var int   t1 = 0
+var int   t2 = 0
+var int   t3 = 0
+var int   t4 = 0
+
+// -------- Global lines/labels ----------
+var line l1 = na
+var line l2 = na
+var line l3 = na
+var line neckline = na
+var line tpLine = na
+var line slLine = na
+var label lastLabel = na
+var label tpLabel = na
+var label slLabel = na
+
+// -------- Trade variables ----------
+var float activeTP = na
+var float activeSL = na
+var bool inTrade = false
+
+// -------- Temporary variables ----------
+var float newTP = na
+var float newSL = na
+var bool  newTrade = false
+
+// -------- Check for valid M pattern (Low-High-Low-High) ----------
+f_is_valid_m(_t4, _t3, _t2, _t1, _v4, _v3, _v2, _v1) =>
+    // sequence: old->new = Low, High, Low, High
+    cond1 = _t4 == 1 and _t3 == 2 and _t2 == 1 and _t1 == 2
+    // 2nd low should not be lower than 1st low (i.e., _v2 >= _v4)
+    cond2 = _v2 >= _v4
+    // 2 highs roughly equal (within tolerance)
+    // _v3 and _v1 are the two highs in this ordering
+    tol = na(_v3) or na(_v1) or _v1 == 0 ? 999.0 : math.abs((_v3 - _v1) / _v1) * 100
+    cond3 = tol <= tolPct
+    cond1 and cond2 and cond3
+
+// -------- Clear function ----------
+f_clear() =>
+    if not na(l1)
+        line.delete(l1)
+    if not na(l2)
+        line.delete(l2)
+    if not na(l3)
+        line.delete(l3)
+    if not na(neckline)
+        line.delete(neckline)
+    if not na(tpLine)
+        line.delete(tpLine)
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(lastLabel)
+        label.delete(lastLabel)
+    if not na(tpLabel)
+        label.delete(tpLabel)
+    if not na(slLabel)
+        label.delete(slLabel)
+
+// -------- Check if TP/SL reached ----------
+if inTrade
+    if not na(activeTP) and low <= activeTP
+        f_clear()
+        activeTP := na
+        activeSL := na
+        inTrade := false
+    if not na(activeSL) and high >= activeSL
+        f_clear()
+        activeTP := na
+        activeSL := na
+        inTrade := false
+
+// session check
+inNSESession = not restrictNSE or not na(time(timeframe.period, nseSession))
+
+// -------- Pivot High detected ----------
+if not na(ph)
+    v4 := v3
+    i4 := i3
+    t4 := t3
+
+    v3 := v2
+    i3 := i2
+    t3 := t2
+
+    v2 := v1
+    i2 := i1
+    t2 := t1
+
+    v1 := ph
+    i1 := bar_index - pivotLen
+    t1 := 2
+
+    if f_is_valid_m(t4, t3, t2, t1, v4, v3, v2, v1)
+        f_clear()
+        activeTP := na
+        activeSL := na
+        inTrade := false
+
+        if inNSESession
+            l1 := line.new(i4, v4, i3, v3, xloc=xloc.bar_index, color=lineColor, width=lw)
+            l2 := line.new(i3, v3, i2, v2, xloc=xloc.bar_index, color=lineColor, width=lw)
+            l3 := line.new(i2, v2, i1, v1, xloc=xloc.bar_index, color=lineColor, width=lw)
+
+            // neckline at v2 (the valley). For M (double-top) we treat neckline as support
+            neckline := line.new(i2, v2, bar_index, v2, xloc=xloc.bar_index, extend=extend.right, color=color.rgb(55, 247, 7), width=2)
+            lastLabel := label.new(i1, v1, "M", yloc=yloc.abovebar, style=label.style_label_down, color=color.red, textcolor=color.white)
+
+            float necklineVal = v2
+            float highVal = math.max(v1, v3)
+            float stop = highVal
+            float risk = stop - necklineVal
+            float target = necklineVal - risk * rrRatio
+
+            newTP := na
+            newSL := na
+            newTrade := false
+
+            if showTarget
+                tpLine := line.new(i2, target, bar_index, target, xloc=xloc.bar_index, extend=extend.right, color=tpColor, style=line.style_dashed, width=tpWidth)
+                tpLabel := label.new(bar_index, target, "TP\n"+str.tostring(target, format.mintick), yloc=yloc.price, style=label.style_label_up, color=tpColor, textcolor=color.white)
+                newTP := target
+
+            if showStop
+                slLine := line.new(i2, stop, bar_index, stop, xloc=xloc.bar_index, extend=extend.right, color=slColor, style=line.style_dashed, width=slWidth)
+                slLabel := label.new(bar_index, stop, "SL\n"+str.tostring(stop, format.mintick), yloc=yloc.price, style=label.style_label_down, color=slColor, textcolor=color.white)
+                newSL := stop
+
+            newTrade := true
+
+// -------- Pivot Low detected ----------
+if not na(pl)
+    v4 := v3
+    i4 := i3
+    t4 := t3
+
+    v3 := v2
+    i3 := i2
+    t3 := t2
+
+    v2 := v1
+    i2 := i1
+    t2 := t1
+
+    v1 := pl
+    i1 := bar_index - pivotLen
+    t1 := 1
+
+    if f_is_valid_m(t4, t3, t2, t1, v4, v3, v2, v1)
+        f_clear()
+        activeTP := na
+        activeSL := na
+        inTrade := false
+
+        if inNSESession
+            l1 := line.new(i4, v4, i3, v3, xloc=xloc.bar_index, color=lineColor, width=lw)
+            l2 := line.new(i3, v3, i2, v2, xloc=xloc.bar_index, color=lineColor, width=lw)
+            l3 := line.new(i2, v2, i1, v1, xloc=xloc.bar_index, color=lineColor, width=lw)
+
+            neckline := line.new(i2, v2, bar_index, v2, xloc=xloc.bar_index, extend=extend.right, color=color.rgb(5, 249, 10), width=2)
+            lastLabel := label.new(i1, v1, "M", yloc=yloc.abovebar, style=label.style_label_down, color=color.red, textcolor=color.white)
+
+            float necklineVal = v2
+            float highVal = math.max(v1, v3)
+            float stop = highVal
+            float risk = stop - necklineVal
+            float target = necklineVal - risk * rrRatio
+
+            newTP := na
+            newSL := na
+            newTrade := false
+
+            if showTarget
+                tpLine := line.new(i2, target, bar_index, target, xloc=xloc.bar_index, extend=extend.right, color=tpColor, style=line.style_dashed, width=tpWidth)
+                tpLabel := label.new(bar_index, target, "TP\n"+str.tostring(target, format.mintick), yloc=yloc.price, style=label.style_label_up, color=tpColor, textcolor=color.white)
+                newTP := target
+
+            if showStop
+                slLine := line.new(i2, stop, bar_index, stop, xloc=xloc.bar_index, extend=extend.right, color=slColor, style=line.style_dashed, width=slWidth)
+                slLabel := label.new(bar_index, stop, "SL\n"+str.tostring(stop, format.mintick), yloc=yloc.price, style=label.style_label_down, color=slColor, textcolor=color.white)
+                newSL := stop
+
+            newTrade := true
+
+// -------- Commit global trade variables ----------
+if newTrade
+    activeTP := newTP
+    activeSL := newSL
+    inTrade := true
+    newTP := na
+    newSL := na
+    newTrade := false
